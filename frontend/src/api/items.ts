@@ -74,6 +74,28 @@ export const updateItemMultiSpec = (cookieId: string, itemId: string, enabled: b
   return put(`/items/${cookieId}/${itemId}/multi-spec`, { is_multi_spec: enabled })
 }
 
+export interface SyncSpecCardItem {
+  id: number
+  status: 'created' | 'updated'
+  spec_name: string
+  spec_value: string
+  source_sku_key: string
+}
+
+export interface SyncSpecCardsResponse extends ApiResponse {
+  item_id: string
+  item_title: string
+  sku_count: number
+  created_count: number
+  updated_count: number
+  is_multi_spec: boolean
+  cards: SyncSpecCardItem[]
+}
+
+export const syncItemSpecCards = (cookieId: string, itemId: string): Promise<SyncSpecCardsResponse> => {
+  return post(`/items/${cookieId}/${itemId}/sync-spec-cards`)
+}
+
 
 // ==================== 商品默认回复 ====================
 

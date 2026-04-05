@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
-import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X, MessageSquare, ImagePlus } from 'lucide-react'
-import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec, getItemDefaultReply, saveItemDefaultReply, deleteItemDefaultReply, batchSaveItemDefaultReply, batchDeleteItemDefaultReply, uploadItemDefaultReplyImage } from '@/api/items'
+import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Ticket, Trash2, X, MessageSquare, ImagePlus } from 'lucide-react'
+import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec, syncItemSpecCards, getItemDefaultReply, saveItemDefaultReply, deleteItemDefaultReply, batchSaveItemDefaultReply, batchDeleteItemDefaultReply, uploadItemDefaultReplyImage } from '@/api/items'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -18,6 +18,7 @@ export function Items() {
   const [searchKeyword, setSearchKeyword] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string | number>>(new Set())
   const [fetching, setFetching] = useState(false)
+  const [syncingItemId, setSyncingItemId] = useState<string | number | null>(null)
 
   // 编辑弹窗状态
   const [editingItem, setEditingItem] = useState<Item | null>(null)
@@ -188,6 +189,34 @@ export function Items() {
       loadItems()
     } catch {
       addToast({ type: 'error', message: '操作失败' })
+    }
+  }
+
+  const handleSyncSpecCards = async (item: Item) => {
+    setSyncingItemId(item.id)
+    try {
+      const result = await syncItemSpecCards(item.cookie_id, item.item_id)
+      const skuCount = result.sku_count || 0
+      const createdCount = result.created_count || 0
+      const updatedCount = result.updated_count || 0
+
+      if (skuCount > 0) {
+        addToast({
+          type: 'success',
+          message: result.message || `已同步 ${skuCount} 个规格卡券，新增 ${createdCount} 个，更新 ${updatedCount} 个`
+        })
+      } else {
+        addToast({
+          type: 'warning',
+          message: result.message || '该商品没有可同步的规格配置'
+        })
+      }
+
+      await loadItems()
+    } catch {
+      addToast({ type: 'error', message: '同步规格卡券失败' })
+    } finally {
+      setSyncingItemId(null)
     }
   }
 
@@ -645,6 +674,18 @@ export function Items() {
                     </td>
                     <td className="sticky right-0 bg-white dark:bg-slate-900">
                       <div className="flex gap-1">
+                        <button
+                          onClick={() => handleSyncSpecCards(item)}
+                          disabled={syncingItemId === item.id}
+                          className="table-action-btn hover:!bg-amber-50 disabled:opacity-60"
+                          title="同步规格卡券"
+                        >
+                          {syncingItemId === item.id ? (
+                            <Loader2 className="w-4 h-4 text-amber-500 animate-spin" />
+                          ) : (
+                            <Ticket className="w-4 h-4 text-amber-500" />
+                          )}
+                        </button>
                         <button
                           onClick={() => handleOpenDefaultReply(item)}
                           className="table-action-btn hover:!bg-green-50"

@@ -2958,7 +2958,10 @@ class XianyuLive:
                         await self.update_config_cookies()
                         logger.warning("已更新Cookie到数据库")
 
-                logger.warning(f"商品信息获取成功: {res_json}")
+                if isinstance(res_json, dict):
+                    logger.warning(f"商品详情接口返回成功: ret={res_json.get('ret', [])}, data_keys={list(res_json.get('data', {}).keys()) if isinstance(res_json.get('data'), dict) else []}")
+                else:
+                    logger.warning(f"商品详情接口返回成功，响应类型: {type(res_json).__name__}")
                 # 检查返回状态
                 if isinstance(res_json, dict):
                     ret_value = res_json.get('ret', [])
@@ -8193,7 +8196,11 @@ class XianyuLive:
                         await self.update_config_cookies()
                         logger.warning("已更新Cookie到数据库")
 
-                logger.info(f"商品信息获取响应: {res_json}")
+                if isinstance(res_json, dict):
+                    data_keys = list(res_json.get('data', {}).keys()) if isinstance(res_json.get('data'), dict) else []
+                    logger.info(f"商品列表接口返回: ret={res_json.get('ret', [])}, data_keys={data_keys}")
+                else:
+                    logger.info(f"商品列表接口返回类型: {type(res_json).__name__}")
 
                 # 检查响应是否成功
                 if res_json.get('ret') and res_json['ret'][0] == 'SUCCESS::调用成功':

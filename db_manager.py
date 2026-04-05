@@ -209,6 +209,9 @@ class DBManager:
                 is_multi_spec BOOLEAN DEFAULT FALSE,
                 spec_name TEXT,
                 spec_value TEXT,
+                source_cookie_id TEXT,
+                source_item_id TEXT,
+                source_sku_key TEXT,
                 user_id INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -497,7 +500,9 @@ class DBManager:
                 logger.info("数据库迁移完成：添加image_url列")
 
             # 检查并更新CHECK约束（重建表以支持image类型）
+            self.upgrade_cards_table_for_item_sources(cursor)
             self._update_cards_table_constraints(cursor)
+            self.upgrade_cards_table_for_item_sources(cursor)
 
             # 检查cookies表是否存在remark列
             cursor.execute("PRAGMA table_info(cookies)")
@@ -552,6 +557,9 @@ class DBManager:
                         is_multi_spec BOOLEAN DEFAULT FALSE,
                         spec_name TEXT,
                         spec_value TEXT,
+                        source_cookie_id TEXT,
+                        source_item_id TEXT,
+                        source_sku_key TEXT,
                         user_id INTEGER NOT NULL DEFAULT 1,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -563,9 +571,11 @@ class DBManager:
                     cursor.execute('''
                     INSERT INTO cards_new (id, name, type, api_config, text_content, data_content, image_url,
                                           description, enabled, delay_seconds, is_multi_spec, spec_name, spec_value,
+                                          source_cookie_id, source_item_id, source_sku_key,
                                           user_id, created_at, updated_at)
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec, spec_name, spec_value,
+                           source_cookie_id, source_item_id, source_sku_key,
                            user_id, created_at, updated_at
                     FROM cards
                     ''')
@@ -587,7 +597,32 @@ class DBManager:
                         pass
             else:
                 logger.error(f"检查cards表约束时出现未知错误: {e}")
-            
+
+    def upgrade_cards_table_for_item_sources(self, cursor):
+        """为cards表补充商品规格同步来源字段。"""
+        try:
+            cursor.execute("PRAGMA table_info(cards)")
+            columns = [column[1] for column in cursor.fetchall()]
+
+            required_columns = {
+                'source_cookie_id': 'TEXT',
+                'source_item_id': 'TEXT',
+                'source_sku_key': 'TEXT',
+            }
+
+            for column_name, column_type in required_columns.items():
+                if column_name not in columns:
+                    logger.info(f"正在为cards表添加 {column_name} 字段...")
+                    self._execute_sql(cursor, f"ALTER TABLE cards ADD COLUMN {column_name} {column_type}")
+
+            self._execute_sql(
+                cursor,
+                "CREATE INDEX IF NOT EXISTS idx_cards_source_lookup ON cards(user_id, source_cookie_id, source_item_id, source_sku_key)"
+            )
+        except Exception as e:
+            logger.error(f"升级cards表来源字段失败: {e}")
+            raise
+
     def check_and_upgrade_db(self, cursor):
         """检查数据库版本并执行必要的升级"""
         try:
@@ -636,6 +671,12 @@ class DBManager:
                 self.upgrade_cookies_table_for_account_login(cursor)
                 self.set_system_setting("db_version", "1.5", "数据库版本号")
                 logger.info("数据库升级到版本1.5完成")
+
+            if current_version < "1.6":
+                logger.info("开始升级数据库到版本1.6...")
+                self.upgrade_cards_table_for_item_sources(cursor)
+                self.set_system_setting("db_version", "1.6", "数据库版本号")
+                logger.info("数据库升级到版本1.6完成")
 
             # 迁移遗留数据（在所有版本升级完成后执行）
             self.migrate_legacy_data(cursor)
@@ -3080,7 +3121,8 @@ class DBManager:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, source_cookie_id, source_item_id, source_sku_key,
+                           created_at, updated_at
                     FROM cards
                     WHERE user_id = ?
                     ORDER BY created_at DESC
@@ -3089,7 +3131,8 @@ class DBManager:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, source_cookie_id, source_item_id, source_sku_key,
+                           created_at, updated_at
                     FROM cards
                     ORDER BY created_at DESC
                     ''')
@@ -3120,8 +3163,11 @@ class DBManager:
                         'is_multi_spec': bool(row[10]) if row[10] is not None else False,
                         'spec_name': row[11],
                         'spec_value': row[12],
-                        'created_at': row[13],
-                        'updated_at': row[14]
+                        'source_cookie_id': row[13],
+                        'source_item_id': row[14],
+                        'source_sku_key': row[15],
+                        'created_at': row[16],
+                        'updated_at': row[17]
                     })
 
                 return cards
@@ -3138,14 +3184,16 @@ class DBManager:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, source_cookie_id, source_item_id, source_sku_key,
+                           created_at, updated_at
                     FROM cards WHERE id = ? AND user_id = ?
                     ''', (card_id, user_id))
                 else:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, source_cookie_id, source_item_id, source_sku_key,
+                           created_at, updated_at
                     FROM cards WHERE id = ?
                     ''', (card_id,))
 
@@ -3175,8 +3223,11 @@ class DBManager:
                         'is_multi_spec': bool(row[10]) if row[10] is not None else False,
                         'spec_name': row[11],
                         'spec_value': row[12],
-                        'created_at': row[13],
-                        'updated_at': row[14]
+                        'source_cookie_id': row[13],
+                        'source_item_id': row[14],
+                        'source_sku_key': row[15],
+                        'created_at': row[16],
+                        'updated_at': row[17]
                     }
                 return None
             except Exception as e:
@@ -3289,6 +3340,97 @@ class DBManager:
                 logger.error(f"更新卡券图片URL失败: {e}")
                 self.conn.rollback()
                 return False
+
+    def sync_item_spec_cards(self, user_id: int, cookie_id: str, item_id: str, item_title: str,
+                             specs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """根据商品规格创建或更新卡券占位，不自动创建发货规则。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                created_count = 0
+                updated_count = 0
+                synced_cards = []
+
+                clean_title = (item_title or item_id or '未命名商品').strip() or item_id
+                generated_name = f"{clean_title} [{item_id}]"
+                generated_description = f"自动同步自商品「{clean_title}」({item_id})，请补充对应规格的发货内容。"
+                seen_keys = set()
+
+                for spec in specs:
+                    spec_name = str(spec.get('spec_name') or '').strip()
+                    spec_value = str(spec.get('spec_value') or '').strip()
+                    source_sku_key = str(spec.get('source_sku_key') or '').strip()
+
+                    if not spec_name or not spec_value or not source_sku_key:
+                        continue
+                    if source_sku_key in seen_keys:
+                        continue
+
+                    seen_keys.add(source_sku_key)
+
+                    self._execute_sql(cursor, '''
+                    SELECT id
+                    FROM cards
+                    WHERE user_id = ? AND source_cookie_id = ? AND source_item_id = ? AND source_sku_key = ?
+                    LIMIT 1
+                    ''', (user_id, cookie_id, item_id, source_sku_key))
+                    existing_row = cursor.fetchone()
+
+                    if existing_row:
+                        card_id = existing_row[0]
+                        self._execute_sql(cursor, '''
+                        UPDATE cards
+                        SET is_multi_spec = 1,
+                            spec_name = ?,
+                            spec_value = ?,
+                            source_cookie_id = ?,
+                            source_item_id = ?,
+                            source_sku_key = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        ''', (spec_name, spec_value, cookie_id, item_id, source_sku_key, card_id))
+                        updated_count += 1
+                        status = 'updated'
+                    else:
+                        self._execute_sql(cursor, '''
+                        INSERT INTO cards (
+                            name, type, text_content, description, enabled, delay_seconds,
+                            is_multi_spec, spec_name, spec_value, source_cookie_id,
+                            source_item_id, source_sku_key, user_id
+                        )
+                        VALUES (?, 'text', '', ?, 1, 0, 1, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            generated_name,
+                            generated_description,
+                            spec_name,
+                            spec_value,
+                            cookie_id,
+                            item_id,
+                            source_sku_key,
+                            user_id,
+                        ))
+                        card_id = cursor.lastrowid
+                        created_count += 1
+                        status = 'created'
+
+                    synced_cards.append({
+                        'id': card_id,
+                        'status': status,
+                        'spec_name': spec_name,
+                        'spec_value': spec_value,
+                        'source_sku_key': source_sku_key,
+                    })
+
+                self.conn.commit()
+                return {
+                    'created_count': created_count,
+                    'updated_count': updated_count,
+                    'cards': synced_cards,
+                }
+            except Exception as e:
+                logger.error(f"同步商品规格卡券失败: {e}")
+                self.conn.rollback()
+                raise
 
     # ==================== 自动发货规则方法 ====================
 

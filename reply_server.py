@@ -6144,6 +6144,152 @@ def clear_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(requi
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _build_item_spec_source_key(sku: Dict[str, Any]) -> str:
+    """为商品规格构建稳定的来源键，优先使用闲鱼返回的SKU ID。"""
+    for key in ('skuId', 'inventoryId'):
+        value = sku.get(key)
+        if value not in (None, ''):
+            return str(value)
+
+    property_list = sku.get('propertyList') or []
+    pairs = []
+    for prop in property_list:
+        prop_name = str(prop.get('propertyText') or '').strip()
+        prop_value = str(prop.get('actualValueText') or prop.get('valueText') or '').strip()
+        if prop_name or prop_value:
+            pairs.append(f"{prop_name}:{prop_value}")
+
+    return '|'.join(pairs)
+
+
+def _extract_item_specs_from_detail(detail_result: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+    """从闲鱼商品详情接口结果中提取规格配置。"""
+    if not isinstance(detail_result, dict):
+        return '', []
+
+    item_data = detail_result.get('data', {}).get('itemDO', {})
+    item_title = str(item_data.get('title') or '').strip()
+    raw_skus = item_data.get('skuList') or item_data.get('idleItemSkuList') or []
+
+    specs = []
+    seen_keys = set()
+
+    for sku in raw_skus:
+        property_list = sku.get('propertyList') or []
+        spec_name_parts = []
+        spec_value_parts = []
+
+        for prop in property_list:
+            prop_name = str(prop.get('propertyText') or '').strip()
+            prop_value = str(prop.get('actualValueText') or prop.get('valueText') or '').strip()
+            if prop_name:
+                spec_name_parts.append(prop_name)
+            if prop_value:
+                spec_value_parts.append(prop_value)
+
+        spec_name = ' / '.join(spec_name_parts)
+        spec_value = ' / '.join(spec_value_parts)
+        source_sku_key = _build_item_spec_source_key(sku)
+
+        if not spec_name or not spec_value or not source_sku_key or source_sku_key in seen_keys:
+            continue
+
+        seen_keys.add(source_sku_key)
+        specs.append({
+            'spec_name': spec_name,
+            'spec_value': spec_value,
+            'source_sku_key': source_sku_key,
+            'sku_id': sku.get('skuId'),
+            'inventory_id': sku.get('inventoryId'),
+            'price_in_cent': sku.get('priceInCent', sku.get('price')),
+            'quantity': sku.get('quantity'),
+        })
+
+    return item_title, specs
+
+
+@app.post("/items/{cookie_id}/{item_id}/sync-spec-cards")
+async def sync_item_spec_cards(cookie_id: str, item_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """拉取闲鱼商品规格，并同步生成对应的卡券占位。"""
+    try:
+        user_id = current_user['user_id']
+        user_cookies = db_manager.get_all_cookies(user_id)
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权限访问该Cookie")
+
+        cookie_info = db_manager.get_cookie_by_id(cookie_id)
+        if not cookie_info:
+            raise HTTPException(status_code=404, detail="账号不存在")
+
+        cookies_str = cookie_info.get('cookies_str', '')
+        if not cookies_str:
+            raise HTTPException(status_code=400, detail="账号cookies为空")
+
+        from XianyuAutoAsync import XianyuLive
+        xianyu_instance = XianyuLive(cookies_str, cookie_id)
+        detail_result = None
+
+        try:
+            await xianyu_instance.create_session()
+            detail_result = await xianyu_instance.get_item_info(item_id)
+        finally:
+            try:
+                await xianyu_instance.close_session()
+            except Exception as close_error:
+                logger.warning(f"关闭商品规格同步会话失败: {close_error}")
+
+        if not isinstance(detail_result, dict):
+            raise HTTPException(status_code=502, detail="闲鱼接口返回异常")
+
+        if detail_result.get('error'):
+            return {"success": False, "message": detail_result['error']}
+
+        ret_values = detail_result.get('ret') or []
+        if not any('SUCCESS::调用成功' in ret for ret in ret_values):
+            error_message = ret_values[0] if ret_values else '闲鱼接口返回异常'
+            return {"success": False, "message": error_message}
+
+        item_title, specs = _extract_item_specs_from_detail(detail_result)
+        if not item_title:
+            item_info = db_manager.get_item_info(cookie_id, item_id) or {}
+            item_title = item_info.get('item_title') or item_id
+
+        is_multi_spec = len(specs) > 1
+        db_manager.update_item_multi_spec_status(cookie_id, item_id, is_multi_spec)
+
+        if not specs:
+            return {
+                "success": True,
+                "message": "该商品没有可同步的规格配置",
+                "item_id": item_id,
+                "item_title": item_title,
+                "sku_count": 0,
+                "created_count": 0,
+                "updated_count": 0,
+                "is_multi_spec": False,
+                "cards": []
+            }
+
+        sync_result = db_manager.sync_item_spec_cards(user_id, cookie_id, item_id, item_title, specs)
+
+        return {
+            "success": True,
+            "message": f"已同步 {len(specs)} 个规格卡券，占位新增 {sync_result['created_count']} 个，更新 {sync_result['updated_count']} 个",
+            "item_id": item_id,
+            "item_title": item_title,
+            "sku_count": len(specs),
+            "created_count": sync_result['created_count'],
+            "updated_count": sync_result['updated_count'],
+            "is_multi_spec": is_multi_spec,
+            "cards": sync_result['cards'],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"同步商品规格卡券失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # 商品多规格管理API
 @app.put("/items/{cookie_id}/{item_id}/multi-spec")
 def update_item_multi_spec(cookie_id: str, item_id: str, spec_data: dict, _: None = Depends(require_auth)):
